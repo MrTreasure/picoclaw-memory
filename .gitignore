@@ -1,0 +1,25 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 本地数据库（用户数据，不含在仓库中）
+*.db
+*.db-wal
+*.db-shm
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# 环境
+.env
+*.local
+
+# 用户配置（保留 config.json 模板，忽略用户修改）
+config.json
