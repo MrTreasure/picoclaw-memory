@@ -4,6 +4,11 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Go 编译输出（源码在 cmd/ 下，二进制在本地构建）
+/capture
+/recall
+/forget
+
 # 本地数据库（用户数据，不含在仓库中）
 *.db
 *.db-wal
@@ -23,3 +28,4 @@ Thumbs.db
 
 # 用户配置（保留 config.json 模板，忽略用户修改）
 config.json
+config.json.bak

@@ -1,0 +1,12 @@
+{
+  "workspace": "/vol1/picoclaw/home/workspace",
+  "memory_dir": "/vol1/picoclaw/home/workspace/memory",
+  "db_path": "/vol1/picoclaw/home/workspace/memory/memory.db",
+  "picoclaw_bin": "/home/Treasure/.local/bin/picoclaw",
+  "llm_model": "qwen3.7-plus",
+  "retention_days": {
+    "daily": 7,
+    "weekly": 30,
+    "monthly": 365
+  }
+}
