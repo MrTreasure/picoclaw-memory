@@ -1,3 +1,15 @@
+> **⚠️ ARCHIVED — This project is no longer maintained.**
+>
+> As of **picoclaw v0.3.x**, the native binary includes a built-in memory system (`pkg/memory` + `pkg/seahorse`) that covers everything this repo does:
+> - **MemoryStore** — Long-term MEMORY.md + daily notes, auto-injected into system prompt
+> - **Seahorse** — SQLite FTS5 engine with grep/expand tools, summarization, and compaction
+>
+> No need for a separate binary. Just set `config.json` → `agents.defaults.context_manager: "seahorse"` and you're done.
+>
+> See: [github.com/sipeed/picoclaw](https://github.com/sipeed/picoclaw)
+>
+> ---
+
 # Picoclaw Memory System
 
 A lightweight, zero-dependency, single-binary AI Agent memory system. Built with **Go + SQLite FTS5**.
