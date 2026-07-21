@@ -593,3 +593,71 @@ func ContentExists(conn *sql.DB, content string) (bool, error) {
 	}
 	return count > 0, nil
 }
+
+// GetMemoriesByDateRange 按时间范围和 source 查询记忆（用于总结）
+func GetMemoriesByDateRange(conn *sql.DB, start, end time.Time, source string, archived bool) ([]models.Memory, error) {
+	var conditions []string
+	var args []interface{}
+
+	conditions = append(conditions, "created_at >= ? AND created_at <= ?")
+	args = append(args, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+
+	if source != "" {
+		conditions = append(conditions, "source = ?")
+		args = append(args, source)
+	}
+
+	archivedInt := 0
+	if archived {
+		archivedInt = 1
+	}
+	conditions = append(conditions, "archived = ?")
+	args = append(args, archivedInt)
+
+	where := strings.Join(conditions, " AND ")
+
+	rows, err := conn.Query(fmt.Sprintf(`
+		SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		FROM memories WHERE %s ORDER BY created_at ASC`, where), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query date range: %w", err)
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+// CountBySourceAndTopic 按 source + topic 统计数量（用于检查是否已总结）
+func CountBySourceAndTopic(conn *sql.DB, source, topic string) (int, error) {
+	var count int
+	err := conn.QueryRow(
+		"SELECT COUNT(*) FROM memories WHERE source = ? AND topic = ?",
+		source, topic,
+	).Scan(&count)
+	return count, err
+}
+
+// ArchiveByIDs 按 ID 列表归档记忆
+func ArchiveByIDs(conn *sql.DB, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids)+1)
+	args[0] = now
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i+1] = id
+	}
+
+	result, err := conn.Exec(
+		fmt.Sprintf("UPDATE memories SET archived = 1, accessed_at = ? WHERE id IN (%s)",
+			strings.Join(placeholders, ",")),
+		args...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("archive by ids: %w", err)
+	}
+	return result.RowsAffected()
+}

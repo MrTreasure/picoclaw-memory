@@ -1,103 +1,198 @@
 # Picoclaw Memory System
 
-轻量、零依赖、单二进制的 AI Agent 记忆系统。基于 Go + SQLite FTS5。
+A lightweight, zero-dependency, single-binary AI Agent memory system. Built with **Go + SQLite FTS5**.
 
-## 为什么不是 Mem0 / PowerMem
+Drop-in replacement for PowerMem / Mem0 — no Python, no embedding models, no hundreds-MB venv.
 
-| 特性 | Mem0 | PowerMem | **picoclaw-memory** |
-|------|------|----------|-------------------|
-| 依赖 | 20+ 包 | 30+ 包 | **零依赖（Go 单二进制）** |
-| 安装体积 | ~500MB | ~800MB | **~7MB** |
-| Embedding 模型 | 必须 | 必须 | **不需要** |
-| 存储 | Chroma/Redis | Chroma/Postgres | **SQLite (WAL + FTS5)** |
-| 搜索 | Vector + hybrid | Vector + hybrid | **FTS5 全文搜索 + LIKE 兜底** |
-| 冷启动 | 5-10 min | 10-15 min | **instant** |
+## Why not Mem0 / PowerMem?
 
-## 特性
+| Feature | Mem0 | PowerMem | **Picoclaw Memory** |
+|---------|------|----------|-------------------|
+| Runtime | Python 3.8+ | Python 3.11+ | **Go single binary** |
+| Dependencies | 20+ packages | 30+ packages | **Zero** |
+| Install size | ~500MB | ~800MB | **~8MB** |
+| Embedding model | Required | Required | **Not needed** |
+| Storage | Chroma/Redis | Chroma/Postgres | **SQLite (WAL + FTS5)** |
+| Search | Vector + Hybrid | Vector + Hybrid | **FTS5 full-text + LIKE fallback** |
+| Cold start | 5-10 min | 10-15 min | **Instant** |
+| Chinese support | ❌ | ❌ | **FTS5 + LIKE dual engine** |
 
-- **零外部依赖** — 纯 Go 编译，单个二进制文件，无运行时依赖
-- **FTS5 全文搜索** — 无需 embedding 模型的快速检索
-- **每日采集** — 从 Daily Note 自动提取事实
-- **中文友好** — FTS5 兜底 LIKE 搜索，处理中文单字符分词问题
-- **重要性标记** — 支持 `[imp:1-5]` 自定义重要性
-- **自动遗忘** — 按策略归档或删除旧记忆
-- **SQLite 存储** — 单文件，易备份和迁移
+**Building million-doc production RAG pipelines?** → Use Mem0.  
+**Just want your AI Agent to remember daily conversations?** → Use this.
 
-## 快速开始
+## Features
 
-```bash
-# 安装二进制到 PATH
-cp capture /usr/local/bin/pcm-capture
-cp recall /usr/local/bin/pcm-recall
-cp forget /usr/local/bin/pcm-forget
-cp config.json /usr/local/bin/
+- **Zero dependencies** — Pure Go, single binary, no runtime requirements
+- **FTS5 full-text search** — Fast retrieval without embedding models
+- **Chinese-friendly** — FTS5 with LIKE fallback for single-character tokenization
+- **Daily auto-capture** — Extract facts, tasks, and notes from Daily Notes
+- **Importance scoring** — `[imp:1-5]` markers for weighted retention
+- **Periodic summarization** — Auto-condense raw entries into weekly/monthly summaries
+- **Auto-forgetting** — Policy-based archival and deletion of stale memories
+- **SQLite storage** — Single file, easy backup and migration
 
-# 采集今天的记忆
-pcm-capture
+## Architecture
 
-# 搜索记忆
-pcm-recall "关键词"
-
-# 清理旧记忆
-pcm-forget --dry-run
+```
+┌──────────────────────────────────────────┐
+│               Pipeline                    │
+│                                          │
+│  📝 capture  ──→  📊 summarize  ──→  🗑️ forget │
+│  (daily)          (weekly/monthly)  (auto-clean) │
+│       │                │                  │
+│       ▼                ▼                  │
+│   SQLite DB  ←──────  FTS5  ←──────  recall    │
+│   (raw)           (summary)        (search)    │
+└──────────────────────────────────────────┘
 ```
 
-## 使用方法
-
-### 采集每日记忆
+## Quick Start
 
 ```bash
-# 自动检测今天
+# Build all binaries
+git clone https://github.com/MrTreasure/picoclaw-memory.git
+cd picoclaw-memory
+
+# Requires CGO (SQLite FTS5 needs C library)
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o pcm-capture ./cmd/capture/
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o pcm-recall ./cmd/recall/
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o pcm-summarize ./cmd/summarize/
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o pcm-forget ./cmd/forget/
+
+# Install to PATH
+cp pcm-capture pcm-recall pcm-summarize pcm-forget config.json /usr/local/bin/
+
+# Capture today's memories
 pcm-capture
 
-# 指定日期
+# Search memories
+pcm-recall "keywords"
+```
+
+## Usage
+
+### 📝 capture — Daily Memory Capture
+
+```bash
+# Auto-detect today
+pcm-capture
+
+# Specific date
 pcm-capture --date 2026-07-20
 ```
 
-从 `memory/YYYYMM/YYYYMMDD.md` 提取：
-- 列表项（`- 内容`）→ 重要性 3
-- 任务（`- [x] 内容`）→ 标记为 tasks
-- 含 `[imp:N]` 标记 → 自定义重要性
+Extracts from `memory/YYYYMM/YYYYMMDD.md`:
+- List items (`- text`) → default importance 3
+- Tasks (`- [x] text` or under `## 今日任务`) → tagged as tasks
+- With `[imp:N]` markers → custom importance (1-5)
+- Deduplication: same date + same content won't be re-inserted
 
-### 搜索记忆
+### 📊 summarize — Periodic Summarization
 
 ```bash
-# 全文搜索
-pcm-recall "关键词"
+# Weekly summary
+pcm-summarize --period weekly
 
-# 按 topic 过滤
-pcm-recall "AI" --topic notes
-
-# 限制条数
-pcm-recall "LLM" --top 5
-
-# JSON 输出
-pcm-recall "agent" --json
+# Monthly summary
+pcm-summarize --period monthly
 ```
 
-### 记忆维护
+Pipeline:
+1. Reads unsummarized raw daily entries
+2. Calls LLM (via `picoclaw agent` CLI) to generate condensed summaries
+3. Writes summary entries to DB (inherited importance)
+4. Marks raw entries as archived
+
+### 🔍 recall — Memory Search
 
 ```bash
-# 模拟运行
+# Full-text search
+pcm-recall "keywords"
+
+# Filter by topic
+pcm-recall "AI" --topic notes
+
+# Limit results
+pcm-recall "LLM" --top 5
+
+# JSON output
+pcm-recall "agent" --json
+
+# Include archived entries
+pcm-recall "meeting" --archived
+
+# Filter by minimum importance
+pcm-recall "preferences" --importance 4
+```
+
+### 🗑️ forget — Auto-Forgetting
+
+```bash
+# Dry run (preview)
 pcm-forget --dry-run
 
-# 执行清理
+# Execute cleanup
 pcm-forget
 ```
 
-遗忘规则：
-- 重要性 ≤ 2 + 7天未访问 → 归档
-- 重要性 ≤ 1 + 14天未访问 → 删除
-- 已归档且超过 30 天 → 删除
+Forgetting rules:
+- importance ≤ 2 + 7 days unaccessed → archive (`archived=1`)
+- importance ≤ 1 + 14 days unaccessed → **delete permanently**
+- Archived + 30 days unaccessed → **delete permanently**
+- importance ≥ 3 entries: kept unless long-unaccessed
 
-## 配置
+## Integration with AI Agent
 
-编辑 `config.json`：
+### Architecture
+
+Picoclaw Memory is the sole memory layer, paired with AGENT.md for session context:
+
+```
+┌──────────────────────────────┐
+│      AGENT.md                │  ← always loaded at session start
+│  family/device/security/DB   │
+└──────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────┐
+│   SQLite FTS5 (memory.db)    │  ← on-demand search (pcm-recall)
+│  daily capture + auto-forget  │
+└──────────────────────────────┘
+```
+
+### Integration
+
+As a Skill integration:
+
+```yaml
+# In SKILL.md
+pcm-recall "user preferences"
+```
+
+Or via CLI directly:
+
+```bash
+# Get relevant memories as context
+pcm-recall --top 5
+
+# Search for preferences
+pcm-recall "preferences" --importance 4
+
+# Capture current conversation
+pcm-capture --date $(date +%F)
+```
+
+## Configuration
+
+Edit `config.json`:
 
 ```json
 {
-  "memory_dir": "/path/to/notes",
-  "db_path": "/path/to/memory.db",
+  "workspace": "/path/to/workspace",
+  "memory_dir": "/path/to/workspace/memory",
+  "db_path": "/path/to/workspace/memory/memory.db",
+  "picoclaw_bin": "/path/to/picoclaw",
+  "llm_model": "qwen3.7-plus",
   "retention_days": {
     "daily": 7,
     "weekly": 30,
@@ -106,39 +201,65 @@ pcm-forget
 }
 ```
 
-## 项目结构
+| Field | Description | Default |
+|-------|-------------|---------|
+| workspace | Workspace root | `/path/to/workspace` |
+| memory_dir | Daily Note directory | `{workspace}/memory` |
+| db_path | SQLite database path | `{memory_dir}/memory.db` |
+| picoclaw_bin | picoclaw CLI path (for LLM calls) | - |
+| llm_model | Model for summarization | `qwen3.7-plus` |
+| retention_days.daily | Daily entry retention | 7 |
+| retention_days.weekly | Weekly summary retention | 30 |
+| retention_days.monthly | Monthly summary retention | 365 |
+
+## Project Structure
 
 ```
 picoclaw-memory/
 ├── cmd/
-│   ├── capture/main.go    # 每日记忆采集
-│   ├── recall/main.go     # 记忆检索
-│   └── forget/main.go     # 记忆遗忘
+│   ├── capture/main.go     # Daily memory capture
+│   ├── recall/main.go      # Memory search
+│   ├── summarize/main.go   # Periodic summarization
+│   └── forget/main.go      # Memory forgetting & archival
 ├── internal/
-│   ├── config/config.go   # 配置加载
-│   ├── db/db.go           # SQLite CRUD + FTS5 + 遗忘逻辑
-│   └── models/memory.go   # 数据模型
-├── config.json            # 配置文件
+│   ├── config/config.go    # Configuration loader
+│   ├── db/db.go            # SQLite CRUD + FTS5 + forget logic
+│   └── models/memory.go    # Data models
+├── config.json             # Configuration file
+├── config.json.example     # Configuration template
 ├── go.mod / go.sum
-├── README.md
-└── LICENSE
+├── README.zh.md            # Chinese documentation
+├── README.md               # English documentation (this file)
+├── setup.sh                # Setup script
+└── LICENSE                 # MIT
 ```
 
-## 与 AI Agent 集成
+## Technical Details
 
-通过 CLI 调用：
+### Why SQLite FTS5 over Embedding?
+
+| Factor | FTS5 | Embedding |
+|--------|------|-----------|
+| Dependencies | ✅ CGO (build-time) | ❌ numpy + ONNX/Transformers |
+| Deployment | ✅ Single file | ❌ Model download 500MB+ |
+| Exact match | ✅ Supported | ❌ Fuzzy |
+| Semantic search | ⚠️ Limited | ✅ Strong |
+| Cold start | ✅ Instant | ❌ 5 minutes |
+| Chinese tokenization | ⚠️ LIKE fallback | ✅ Good |
+
+**Bottom line**: For agent conversation memory (hundreds to thousands of entries), FTS5 is enough. If semantic search is needed later, add embedding as a supplementary engine, not a replacement.
+
+### Build Requirements
+
+- Go 1.23+
+- CGO_ENABLED=1 (SQLite FTS5 needs C library)
+- Must use `-tags sqlite_fts5` flag when building
 
 ```bash
-# 获取最近记忆
-pcm-recall --top 5
-
-# 搜索相关记忆
-pcm-recall "用户偏好"
-
-# 采集当前对话
-pcm-capture
+# Correct build
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o pcm-capture ./cmd/capture/
 ```
 
-## 许可证
+## License
 
 MIT
