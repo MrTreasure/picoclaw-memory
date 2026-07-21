@@ -449,13 +449,17 @@ func UpdateAccessedTime(conn *sql.DB, id int64) error {
 }
 
 // ArchiveMemories 执行遗忘流程
-// 归档规则: 重要性 ≤ 2 + 7天未访问 → archived=1
-// 删除规则: 重要性 ≤ 1 + 14天未访问 → 删除
-//          已归档且超过30天 → 删除
+// 归档规则:
+//   - 重要性 ≤ 2 + 7天未访问 → archived=1
+//   - 周报(importance=4) + 90天未访问 → archived=1
+// 删除规则:
+//   - 重要性 ≤ 1 + 14天未访问 → 删除
+//   - 已归档且超过30天 → 删除
+// 月报(importance=6)永久保留,不进入清理流程
 func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skipped []models.Memory, err error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// 查询可归档的记忆
+	// 查询可归档的记忆: 低重要性 + 7天未访问
 	archiveRows, err := conn.Query(
 		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
 		 FROM memories
@@ -465,7 +469,7 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 		now,
 	)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("query archivable: %w", err)
+		return 0, 0, nil, fmt.Errorf("query archivable (low imp): %w", err)
 	}
 	defer archiveRows.Close()
 
@@ -484,6 +488,40 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 			)
 			if err != nil {
 				return archived, deleted, skipped, fmt.Errorf("archive %d: %w", m.ID, err)
+			}
+			archived++
+		}
+	}
+
+	// 查询可归档的周报: 周报(imp=4) + 90天未访问
+	weeklyRows, err := conn.Query(
+		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		 FROM memories
+		 WHERE archived = 0
+		   AND importance = 4
+		   AND julianday(?) - julianday(accessed_at) >= 90`,
+		now,
+	)
+	if err != nil {
+		return archived, deleted, skipped, fmt.Errorf("query archivable (weekly): %w", err)
+	}
+	defer weeklyRows.Close()
+
+	weeklies, err := scanMemories(weeklyRows)
+	if err != nil {
+		return archived, deleted, skipped, fmt.Errorf("scan weekly: %w", err)
+	}
+
+	for _, m := range weeklies {
+		if dryRun {
+			skipped = append(skipped, m)
+		} else {
+			_, err := conn.Exec(
+				"UPDATE memories SET archived = 1, accessed_at = ? WHERE id = ?",
+				now, m.ID,
+			)
+			if err != nil {
+				return archived, deleted, skipped, fmt.Errorf("archive weekly %d: %w", m.ID, err)
 			}
 			archived++
 		}
@@ -529,11 +567,6 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 			}
 			deleted++
 		}
-	}
-
-	if !dryRun {
-		// 提交事务
-		// 注意：每个 Exec 都是自动提交的，不需要显式 commit
 	}
 
 	return archived, deleted, skipped, nil

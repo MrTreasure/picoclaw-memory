@@ -155,9 +155,10 @@ pcm-forget
 
 Forgetting rules:
 - importance ≤ 2 + 7 days unaccessed → archive (`archived=1`)
+- **Weekly summaries (importance=4) + 90 days unaccessed → archive**
 - importance ≤ 1 + 14 days unaccessed → **delete permanently**
 - Archived + 30 days unaccessed → **delete permanently**
-- importance ≥ 3 entries: kept unless long-unaccessed
+- **Monthly summaries (importance=6): kept permanently** — never archived or deleted
 
 ## Integration with AI Agent
 
