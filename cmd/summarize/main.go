@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,11 +19,15 @@ import (
 	"github.com/MrTreasure/picoclaw-memory/internal/models"
 )
 
+// trigram Jaccard 去重阈值
+const dedupThreshold = 0.6
+
 func main() {
 	periodFlag := flag.String("period", "", "总结周期: weekly 或 monthly")
 	dryRun := flag.Bool("dry-run", false, "模拟运行，不实际修改")
 	modelFlag := flag.String("model", "", "使用的 LLM 模型（默认 config.llm_model）")
 	dateFlag := flag.String("date", "", "参考日期（默认今天，用于测试指定某周/月）")
+	offlineFlag := flag.Bool("offline", false, "离线模式：使用 trigram Jaccard 去重排序，不调用 LLM")
 	flag.Parse()
 
 	if *periodFlag == "" {
@@ -122,26 +127,33 @@ func main() {
 		return
 	}
 
-	// 构建 LLM 提示词
-	prompt := buildPrompt(entries, isWeekly)
+	var summaryEntries []models.Memory
 
-	// 调用 LLM
-	fmt.Printf("   🤖 调用 %s 生成总结...\n", model)
-	llmOutput, err := callLLM(cfg.PicoclawBin, model, prompt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ LLM 调用失败: %v\n", err)
-		os.Exit(1)
+	if *offlineFlag {
+		// ===== 离线模式：trigram Jaccard 去重排序 =====
+		fmt.Println("   🔧 离线模式 — 使用 trigram Jaccard 去重排序")
+		summaryEntries = offlineSummarize(entries, isWeekly, topicLabel)
+		fmt.Printf("   ✅ 离线总结完成 — %d 条摘要（去重前 %d 条）\n", len(summaryEntries), len(entries))
+	} else {
+		// ===== 在线模式：调用 LLM =====
+		prompt := buildPrompt(entries, isWeekly)
+
+		fmt.Printf("   🤖 调用 %s 生成总结...\n", model)
+		llmOutput, err := callLLM(cfg.PicoclawBin, model, prompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ LLM 调用失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		summaryEntries = parseLLMResponse(llmOutput, topicLabel)
+		if len(summaryEntries) == 0 {
+			fmt.Fprintf(os.Stderr, "❌ 未能从 LLM 输出中解析出有效条目\n")
+			fmt.Fprintf(os.Stderr, "   LLM 原始输出:\n%s\n", llmOutput)
+			os.Exit(1)
+		}
+
+		fmt.Printf("   ✅ LLM 输出解析成功 — %d 条摘要\n", len(summaryEntries))
 	}
-
-	// 解析 LLM 输出
-	summaryEntries := parseLLMResponse(llmOutput, topicLabel)
-	if len(summaryEntries) == 0 {
-		fmt.Fprintf(os.Stderr, "❌ 未能从 LLM 输出中解析出有效条目\n")
-		fmt.Fprintf(os.Stderr, "   LLM 原始输出:\n%s\n", llmOutput)
-		os.Exit(1)
-	}
-
-	fmt.Printf("   ✅ LLM 输出解析成功 — %d 条摘要\n", len(summaryEntries))
 
 	// 写入总结条目
 	saved := saveSummaryEntries(summaryEntries, targetSource, conn)
@@ -164,6 +176,144 @@ func main() {
 	fmt.Printf("\n📊 记忆库总计: %d 条 | 活跃: %d 条 | 已归档: %d 条\n",
 		stats["total"], stats["active"], stats["archived"])
 }
+
+// ========== 离线模式 ==========
+
+// offlineSummarize 离线总结：按 topic 分组 → 去重 → 排序 → 裁剪
+func offlineSummarize(entries []models.Memory, isWeekly bool, topicLabel string) []models.Memory {
+	// 1. 按 topic 分组
+	groupMap := make(map[string][]models.Memory)
+	var groupOrder []string
+	for _, e := range entries {
+		t := e.Topic
+		if t == "" {
+			t = "general"
+		}
+		if _, ok := groupMap[t]; !ok {
+			groupOrder = append(groupOrder, t)
+		}
+		groupMap[t] = append(groupMap[t], e)
+	}
+
+	// 2. 设置摘要的 importance
+	summaryImp := 4 // weekly_summary
+	if !isWeekly {
+		summaryImp = 6 // monthly_summary
+	}
+
+	var result []models.Memory
+
+	for _, topic := range groupOrder {
+		group := groupMap[topic]
+
+		// 去重 — 按重要性降序后，用 trigram Jaccard 标记重复
+		deduped := dedupEntries(group, dedupThreshold)
+
+		// 排序 — 按 importance 降序，同等 imp 按 accessed_at 降序
+		sort.SliceStable(deduped, func(i, j int) bool {
+			if deduped[i].Importance != deduped[j].Importance {
+				return deduped[i].Importance > deduped[j].Importance
+			}
+			return deduped[i].AccessedAt > deduped[j].AccessedAt
+		})
+
+		// 裁剪 — 每个 topic 保留前 3 条
+		maxPerTopic := 3
+		if len(deduped) > maxPerTopic {
+			deduped = deduped[:maxPerTopic]
+		}
+
+		// 生成摘要条目
+		for _, e := range deduped {
+			result = append(result, models.Memory{
+				Content:    e.Content,
+				Topic:      topicLabel,
+				Source:     "",     // 由 saveSummaryEntries 设置
+				Importance: summaryImp,
+			})
+		}
+	}
+
+	return result
+}
+
+// dedupEntries 对同一 topic 下的条目去重
+// 先按 importance 降序排序，再用 trigram Jaccard 比较
+func dedupEntries(entries []models.Memory, threshold float64) []models.Memory {
+	if len(entries) <= 1 {
+		return entries
+	}
+
+	// 按 importance 降序（高 imp 优先保留）
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Importance != entries[j].Importance {
+			return entries[i].Importance > entries[j].Importance
+		}
+		return entries[i].AccessedAt > entries[j].AccessedAt
+	})
+
+	keep := make([]bool, len(entries))
+	for i := range keep {
+		keep[i] = true
+	}
+
+	for i := 0; i < len(entries); i++ {
+		if !keep[i] {
+			continue
+		}
+		for j := i + 1; j < len(entries); j++ {
+			if !keep[j] {
+				continue
+			}
+			sim := jaccardSim(entries[i].Content, entries[j].Content)
+			if sim > threshold {
+				keep[j] = false
+			}
+		}
+	}
+
+	result := make([]models.Memory, 0, len(entries))
+	for i, e := range entries {
+		if keep[i] {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// trigrams 将字符串转换为 trigram 计数 map
+func trigrams(s string) map[string]int {
+	grams := make(map[string]int)
+	runes := []rune(strings.ToLower(s))
+	for i := 0; i+2 < len(runes); i++ {
+		grams[string(runes[i:i+3])]++
+	}
+	return grams
+}
+
+// jaccardSim 计算两个字符串的 trigram Jaccard 相似度
+func jaccardSim(a, b string) float64 {
+	gramsA := trigrams(a)
+	gramsB := trigrams(b)
+	intersect, union := 0, 0
+	for k := range gramsA {
+		if gramsB[k] > 0 {
+			intersect++
+		}
+		union++
+	}
+	for k := range gramsB {
+		if gramsA[k] <= 0 {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(intersect) / float64(union)
+}
+
+// ========== 在线模式（LLM） ==========
 
 // lastWeekRange 返回上周一 ~ 上周日的 UTC 时间范围
 func lastWeekRange(t time.Time) (start, end time.Time) {

@@ -90,17 +90,35 @@ Extracts from `memory/YYYYMM/YYYYMMDD.md`:
 ### 📊 summarize — Periodic Summarization
 
 ```bash
-# Weekly summary
+# Weekly summary (LLM mode)
 pcm-summarize --period weekly
 
-# Monthly summary
+# Monthly summary (LLM mode)
 pcm-summarize --period monthly
+
+# Offline mode — no LLM, trigram Jaccard dedup + sorting (cheaper)
+pcm-summarize --period weekly --offline
+pcm-summarize --period monthly --offline
 ```
+
+**Two modes:**
+
+| Mode | Flag | Cost | How it works |
+|------|------|------|-------------|
+| Online (default) | *(none)* | LLM API fee | Calls LLM to generate condensed summaries |
+| Offline | `--offline` | **$0** | Trigram Jaccard dedup + importance sorting + topic crop (top 3 per topic) |
+
+**Offline algorithm:**
+1. Group entries by topic
+2. Deduplicate via trigram Jaccard similarity (threshold 0.6) — keeps higher-importance entry
+3. Sort by importance desc → accessed_at desc
+4. Crop to top 3 per topic
+5. Write with imp=4 (weekly) or imp=6 (monthly)
 
 Pipeline:
 1. Reads unsummarized raw daily entries
-2. Calls LLM (via `picoclaw agent` CLI) to generate condensed summaries
-3. Writes summary entries to DB (inherited importance)
+2. Generates condensed summaries (LLM or offline)
+3. Writes summary entries to DB (imp=4 weekly, imp=6 monthly)
 4. Marks raw entries as archived
 
 ### 🔍 recall — Memory Search
