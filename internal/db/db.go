@@ -93,7 +93,7 @@ func InsertMemory(conn *sql.DB, m *models.Memory) (int64, error) {
 		m.Source = "daily"
 	}
 	if m.Importance == 0 {
-		m.Importance = 3
+		m.Importance = 2
 	}
 
 	result, err := conn.Exec(

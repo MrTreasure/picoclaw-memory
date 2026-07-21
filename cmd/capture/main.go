@@ -162,7 +162,7 @@ func parseDailyNote(content string) []parseEntry {
 		}
 
 		// 提取 [imp:N] 标记
-		importance := 3
+		importance := 2
 		if impMatch := impRe.FindStringSubmatch(line); impMatch != nil {
 			fmt.Sscanf(impMatch[1], "%d", &importance)
 		}
