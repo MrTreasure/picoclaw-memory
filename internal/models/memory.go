@@ -12,6 +12,7 @@ type Memory struct {
 	AccessedAt  string  `json:"accessed_at"`
 	AccessCount int     `json:"access_count"`
 	Archived    bool    `json:"archived"`
+	Deleted     bool    `json:"deleted,omitempty"`
 	Rank        float64 `json:"rank,omitempty"`
 }
 

@@ -149,16 +149,25 @@ pcm-recall "preferences" --importance 4
 # Dry run (preview)
 pcm-forget --dry-run
 
-# Execute cleanup
+# Soft delete (set deleted=1, data stays in DB)
 pcm-forget
+
+# Physically purge soft-deleted records
+pcm-forget --purge
 ```
 
 Forgetting rules:
 - importance ≤ 2 + 7 days unaccessed → archive (`archived=1`)
 - **Weekly summaries (importance=4) + 90 days unaccessed → archive**
-- importance ≤ 1 + 14 days unaccessed → **delete permanently**
-- Archived + 30 days unaccessed → **delete permanently**
-- **Monthly summaries (importance=6): kept permanently** — never archived or deleted
+- importance ≤ 1 + 14 days unaccessed → **soft delete** (sets `deleted=1`)
+- Archived + 30 days unaccessed → **soft delete** (sets `deleted=1`)
+- **Monthly summaries (importance=6): kept permanently** — never archived, deleted, or soft-deleted
+
+**Soft delete vs purge:**
+| Action | Effect | Recovery |
+|--------|--------|---------|
+| `pcm-forget` (default) | Sets `deleted=1`, data stays in DB | ✅ Reversible via SQL |
+| `pcm-forget --purge` | Physically `DELETE FROM memories` | ❌ Irreversible |
 
 ## Integration with AI Agent
 

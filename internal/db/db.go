@@ -34,11 +34,15 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			created_at TEXT NOT NULL,
 			accessed_at TEXT NOT NULL,
 			access_count INTEGER DEFAULT 0,
-			archived INTEGER DEFAULT 0
+			archived INTEGER DEFAULT 0,
+			deleted INTEGER DEFAULT 0
 		)
 	`); err != nil {
 		return nil, fmt.Errorf("create memories table: %w", err)
 	}
+
+	// 迁移：已有表添加 deleted 字段（忽略重复列错误）
+	_, _ = conn.Exec("ALTER TABLE memories ADD COLUMN deleted INTEGER DEFAULT 0")
 
 	// FTS5 全文搜索索引
 	if _, err := conn.Exec(`
@@ -110,13 +114,14 @@ func InsertMemory(conn *sql.DB, m *models.Memory) (int64, error) {
 // scanMemory 扫描一行到 Memory 结构体
 func scanMemory(row *sql.Row) (*models.Memory, error) {
 	var m models.Memory
-	var archived int
+	var archived, deleted int
 	err := row.Scan(&m.ID, &m.Content, &m.Topic, &m.Importance,
-		&m.Source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived)
+		&m.Source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived, &deleted)
 	if err != nil {
 		return nil, err
 	}
 	m.Archived = archived != 0
+	m.Deleted = deleted != 0
 	return &m, nil
 }
 
@@ -124,13 +129,14 @@ func scanMemories(rows *sql.Rows) ([]models.Memory, error) {
 	var result []models.Memory
 	for rows.Next() {
 		var m models.Memory
-		var archived int
+		var archived, deleted int
 		err := rows.Scan(&m.ID, &m.Content, &m.Topic, &m.Importance,
-			&m.Source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived)
+			&m.Source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived, &deleted)
 		if err != nil {
 			return nil, fmt.Errorf("scan memory: %w", err)
 		}
 		m.Archived = archived != 0
+		m.Deleted = deleted != 0
 		result = append(result, m)
 	}
 	return result, rows.Err()
@@ -212,6 +218,7 @@ func searchFTS5(conn *sql.DB, query string, top int, topic string, importanceMin
 	if !archived {
 		conditions = append(conditions, "m.archived = 0")
 	}
+	conditions = append(conditions, "m.deleted = 0")
 	if importanceMin > 0 {
 		conditions = append(conditions, "m.importance >= ?")
 		args = append(args, importanceMin)
@@ -222,7 +229,7 @@ func searchFTS5(conn *sql.DB, query string, top int, topic string, importanceMin
 
 	sqlQuery := fmt.Sprintf(`
 		SELECT m.id, m.content, m.topic, m.importance, m.source,
-			   m.created_at, m.accessed_at, m.access_count, m.archived,
+			   m.created_at, m.accessed_at, m.access_count, m.archived, m.deleted,
 			   rank
 		FROM memories_fts
 		JOIN memories m ON m.id = memories_fts.rowid
@@ -254,15 +261,16 @@ func searchFTS5(conn *sql.DB, query string, top int, topic string, importanceMin
 	var result []models.Memory
 	for rows.Next() {
 		var m models.Memory
-		var archived int
+		var archived, deleted int
 		var rank float64
 		var source sql.NullString
 		err := rows.Scan(&m.ID, &m.Content, &m.Topic, &m.Importance,
-			&source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived, &rank)
+			&source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived, &deleted, &rank)
 		if err != nil {
 			return nil, fmt.Errorf("scan FTS5 row: %w", err)
 		}
 		m.Archived = archived != 0
+		m.Deleted = deleted != 0
 		m.Source = source.String
 		m.Rank = rank
 		result = append(result, m)
@@ -285,6 +293,7 @@ func searchLike(conn *sql.DB, query string, top int, topic string, importanceMin
 	if !archived {
 		conditions = append(conditions, "m.archived = 0")
 	}
+	conditions = append(conditions, "m.deleted = 0")
 	if importanceMin > 0 {
 		conditions = append(conditions, "m.importance >= ?")
 		args = append(args, importanceMin)
@@ -295,7 +304,7 @@ func searchLike(conn *sql.DB, query string, top int, topic string, importanceMin
 
 	sqlQuery := fmt.Sprintf(`
 		SELECT m.id, m.content, m.topic, m.importance, m.source,
-			   m.created_at, m.accessed_at, m.access_count, m.archived
+			   m.created_at, m.accessed_at, m.access_count, m.archived, m.deleted
 		FROM memories m
 		WHERE %s
 		ORDER BY m.importance DESC, m.accessed_at DESC
@@ -311,14 +320,15 @@ func searchLike(conn *sql.DB, query string, top int, topic string, importanceMin
 	var result []models.Memory
 	for rows.Next() {
 		var m models.Memory
-		var archived int
+		var archived, deleted int
 		var source sql.NullString
 		err := rows.Scan(&m.ID, &m.Content, &m.Topic, &m.Importance,
-			&source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived)
+			&source, &m.CreatedAt, &m.AccessedAt, &m.AccessCount, &archived, &deleted)
 		if err != nil {
 			return nil, fmt.Errorf("scan LIKE row: %w", err)
 		}
 		m.Archived = archived != 0
+		m.Deleted = deleted != 0
 		m.Source = source.String
 		// LIKE 搜索的 rank 为 0
 		m.Rank = 0
@@ -341,6 +351,7 @@ func listAll(conn *sql.DB, top int, topic string, importanceMin int, archived bo
 	if !archived {
 		conditions = append(conditions, "m.archived = 0")
 	}
+	conditions = append(conditions, "m.deleted = 0")
 	if importanceMin > 0 {
 		conditions = append(conditions, "m.importance >= ?")
 		args = append(args, importanceMin)
@@ -351,7 +362,7 @@ func listAll(conn *sql.DB, top int, topic string, importanceMin int, archived bo
 
 	sqlQuery := fmt.Sprintf(`
 		SELECT m.id, m.content, m.topic, m.importance, m.source,
-			   m.created_at, m.accessed_at, m.access_count, m.archived
+			   m.created_at, m.accessed_at, m.access_count, m.archived, m.deleted
 		FROM memories m
 		WHERE %s
 		ORDER BY m.importance DESC, m.accessed_at DESC
@@ -396,28 +407,28 @@ func GetStats(conn *sql.DB) (map[string]int, error) {
 	stats := make(map[string]int)
 
 	var total int
-	err := conn.QueryRow("SELECT COUNT(*) FROM memories").Scan(&total)
+	err := conn.QueryRow("SELECT COUNT(*) FROM memories WHERE deleted=0").Scan(&total)
 	if err != nil {
 		return nil, fmt.Errorf("get total: %w", err)
 	}
 	stats["total"] = total
 
 	var archived int
-	err = conn.QueryRow("SELECT COUNT(*) FROM memories WHERE archived=1").Scan(&archived)
+	err = conn.QueryRow("SELECT COUNT(*) FROM memories WHERE archived=1 AND deleted=0").Scan(&archived)
 	if err != nil {
 		return nil, fmt.Errorf("get archived: %w", err)
 	}
 	stats["archived"] = archived
 
 	var active int
-	err = conn.QueryRow("SELECT COUNT(*) FROM memories WHERE archived=0").Scan(&active)
+	err = conn.QueryRow("SELECT COUNT(*) FROM memories WHERE archived=0 AND deleted=0").Scan(&active)
 	if err != nil {
 		return nil, fmt.Errorf("get active: %w", err)
 	}
 	stats["active"] = active
 
 	// 按 topic 统计
-	rows, err := conn.Query("SELECT topic, COUNT(*) FROM memories GROUP BY topic ORDER BY COUNT(*) DESC")
+	rows, err := conn.Query("SELECT topic, COUNT(*) FROM memories WHERE deleted=0 GROUP BY topic ORDER BY COUNT(*) DESC")
 	if err != nil {
 		return nil, fmt.Errorf("get topics: %w", err)
 	}
@@ -461,9 +472,9 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 
 	// 查询可归档的记忆: 低重要性 + 7天未访问
 	archiveRows, err := conn.Query(
-		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived, deleted
 		 FROM memories
-		 WHERE archived = 0
+		 WHERE archived = 0 AND deleted = 0
 		   AND importance <= 2
 		   AND julianday(?) - julianday(accessed_at) >= 7`,
 		now,
@@ -495,9 +506,9 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 
 	// 查询可归档的周报: 周报(imp=4) + 90天未访问
 	weeklyRows, err := conn.Query(
-		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived, deleted
 		 FROM memories
-		 WHERE archived = 0
+		 WHERE archived = 0 AND deleted = 0
 		   AND importance = 4
 		   AND julianday(?) - julianday(accessed_at) >= 90`,
 		now,
@@ -527,14 +538,15 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 		}
 	}
 
-	// 查询可删除的记忆
+	// 查询可删除的记忆（软删除）
 	// 1. 已归档且超过30天
 	// 2. 重要性 ≤ 1 + 14天未访问
 	deleteRows, err := conn.Query(
-		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived, deleted
 		 FROM memories
-		 WHERE (archived = 1 AND julianday(?) - julianday(accessed_at) >= 30)
-		    OR (archived = 0 AND importance <= 1 AND julianday(?) - julianday(accessed_at) >= 14)`,
+		 WHERE deleted = 0
+		   AND ((archived = 1 AND julianday(?) - julianday(accessed_at) >= 30)
+		    OR (archived = 0 AND importance <= 1 AND julianday(?) - julianday(accessed_at) >= 14))`,
 		now, now,
 	)
 	if err != nil {
@@ -561,9 +573,9 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 				skipped = append(skipped, m)
 			}
 		} else {
-			_, err := conn.Exec("DELETE FROM memories WHERE id = ?", m.ID)
+			_, err := conn.Exec("UPDATE memories SET deleted = 1, accessed_at = ? WHERE id = ?", now, m.ID)
 			if err != nil {
-				return archived, deleted, skipped, fmt.Errorf("delete %d: %w", m.ID, err)
+				return archived, deleted, skipped, fmt.Errorf("soft delete %d: %w", m.ID, err)
 			}
 			deleted++
 		}
@@ -572,25 +584,28 @@ func ArchiveMemories(conn *sql.DB, dryRun bool) (archived int, deleted int, skip
 	return archived, deleted, skipped, nil
 }
 
-// DeleteMemories 按 ID 列表删除记忆
+// DeleteMemories 按 ID 列表软删除记忆
 func DeleteMemories(conn *sql.DB, ids []int64) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339)
+
 	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
+	args := make([]interface{}, len(ids)+1)
+	args[0] = now
 	for i, id := range ids {
 		placeholders[i] = "?"
-		args[i] = id
+		args[i+1] = id
 	}
 
 	result, err := conn.Exec(
-		fmt.Sprintf("DELETE FROM memories WHERE id IN (%s)", strings.Join(placeholders, ",")),
+		fmt.Sprintf("UPDATE memories SET deleted = 1, accessed_at = ? WHERE id IN (%s)", strings.Join(placeholders, ",")),
 		args...,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("delete memories: %w", err)
+		return 0, fmt.Errorf("soft delete memories: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -598,8 +613,8 @@ func DeleteMemories(conn *sql.DB, ids []int64) (int64, error) {
 // GetAllMemories 获取所有记忆（不含排序，用于批量操作）
 func GetAllMemories(conn *sql.DB) ([]models.Memory, error) {
 	rows, err := conn.Query(
-		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
-		 FROM memories ORDER BY id DESC`,
+		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived, deleted
+		 FROM memories WHERE deleted = 0 ORDER BY id DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -611,7 +626,7 @@ func GetAllMemories(conn *sql.DB) ([]models.Memory, error) {
 // GetMemoryByContent 根据内容查找记忆（用于去重）
 func GetMemoryByContent(conn *sql.DB, content string) (*models.Memory, error) {
 	row := conn.QueryRow(
-		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		`SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived, deleted
 		 FROM memories WHERE content = ?`, content,
 	)
 	return scanMemory(row)
@@ -646,11 +661,12 @@ func GetMemoriesByDateRange(conn *sql.DB, start, end time.Time, source string, a
 	}
 	conditions = append(conditions, "archived = ?")
 	args = append(args, archivedInt)
+	conditions = append(conditions, "deleted = 0")
 
 	where := strings.Join(conditions, " AND ")
 
 	rows, err := conn.Query(fmt.Sprintf(`
-		SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived
+		SELECT id, content, topic, importance, source, created_at, accessed_at, access_count, archived, deleted
 		FROM memories WHERE %s ORDER BY created_at ASC`, where), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query date range: %w", err)
@@ -691,6 +707,15 @@ func ArchiveByIDs(conn *sql.DB, ids []int64) (int64, error) {
 	)
 	if err != nil {
 		return 0, fmt.Errorf("archive by ids: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// PurgeDeletedMemories 物理删除所有已软删除的记忆（--purge 用）
+func PurgeDeletedMemories(conn *sql.DB) (int64, error) {
+	result, err := conn.Exec("DELETE FROM memories WHERE deleted = 1")
+	if err != nil {
+		return 0, fmt.Errorf("purge deleted: %w", err)
 	}
 	return result.RowsAffected()
 }

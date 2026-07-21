@@ -1,8 +1,8 @@
 // Command forget — 记忆遗忘与归档
 // 遗忘规则:
 //   - 重要性 ≤ 2 + 7天未访问 → archived=1 (归档)
-//   - 重要性 ≤ 1 + 14天未访问 → 删除
-//   - 已归档且超过30天 → 删除
+//   - 重要性 ≤ 1 + 14天未访问 → 软删除 (deleted=1)
+//   - 已归档且超过30天 → 软删除 (deleted=1)
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "模拟运行，不实际修改")
+	purge := flag.Bool("purge", false, "物理删除所有已软删除的记录")
 	flag.Parse()
 
 	// 加载配置
@@ -35,6 +36,20 @@ func main() {
 		os.Exit(1)
 	}
 	defer conn.Close()
+
+	// --purge 模式：物理删除
+	if *purge {
+		n, err := db.PurgeDeletedMemories(conn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ 清理失败: %v\n", err)
+			os.Exit(1)
+		}
+		stats, _ := db.GetStats(conn)
+		fmt.Printf("📦 已物理删除 %d 条已软删除的记录\n\n", n)
+		fmt.Printf("📊 当前状态:\n   总计: %d 条 | 活跃: %d 条 | 已归档: %d 条\n",
+			stats["total"], stats["active"], stats["archived"])
+		return
+	}
 
 	// 执行遗忘流程
 	archived, deleted, skipped, err := db.ArchiveMemories(conn, *dryRun)
@@ -58,18 +73,17 @@ func formatReport(archived, deleted int, skipped []models.Memory, stats map[stri
 
 	mode := "🔍 模拟运行"
 	if !dryRun {
-		mode = "🗑️  执行清理"
+		mode = "📦 执行软删除清理"
 	}
 	fmt.Fprintf(&b, "=== %s ===\n", mode)
 	fmt.Fprintf(&b, "时间: %s\n\n", time.Now().Format("2006-01-02 15:04"))
 
 	if archived > 0 {
 		fmt.Fprintf(&b, "📦 归档 (%d 条):\n", archived)
-		// skipped 中包含已归档+已删除的条目，这里只显示相关信息
 	}
 
 	if deleted > 0 {
-		fmt.Fprintf(&b, "🗑️  删除 (%d 条):\n", deleted)
+		fmt.Fprintf(&b, "📦 软删除 (%d 条):\n", deleted)
 	}
 
 	// 显示模拟运行中将被处理的条目
@@ -92,7 +106,7 @@ func formatReport(archived, deleted int, skipped []models.Memory, stats map[stri
 		}
 
 		if len(toDelete) > 0 {
-			fmt.Fprintf(&b, "🗑️  将删除 (%d 条):\n", len(toDelete))
+			fmt.Fprintf(&b, "📦 将软删除 (%d 条):\n", len(toDelete))
 			displayLimit(toDelete, &b, 10)
 			fmt.Fprintln(&b)
 		}
